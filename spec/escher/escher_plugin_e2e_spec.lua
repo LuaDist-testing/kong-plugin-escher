@@ -1,31 +1,28 @@
 local helpers = require "spec.helpers"
 local cjson = require "cjson"
 local Escher = require "escher"
+local TestHelper = require "spec.test_helper"
+
+local function get_response_body(response)
+    local body = assert.res_status(201, response)
+    return cjson.decode(body)
+end
+
+local function setup_test_env()
+    helpers.dao:truncate_tables()
+
+    local service = get_response_body(TestHelper.setup_service())
+    local route = get_response_body(TestHelper.setup_route_for_service(service.id))
+    local plugin = get_response_body(TestHelper.setup_plugin_for_service(service.id, 'escher', { encryption_key_path = "/secret.txt" }))
+    local consumer = get_response_body(TestHelper.setup_consumer('test'))
+
+    return service, route, plugin, consumer
+end
 
 describe("Plugin: escher (access)", function()
-    local dev_env = {
-        custom_plugins = 'escher'
-    }
-
-    local plugin
-    local api_id
 
     setup(function()
-        local api1 = assert(helpers.dao.apis:insert { name = "test-api", hosts = { "test1.com" }, upstream_url = "http://mockbin.com" })
-        api_id = api1.id
-
-        plugin = assert(helpers.dao.plugins:insert {
-            api_id = api1.id,
-            name = "escher",
-            config = {}
-        })
-
-        consumer = assert(helpers.dao.consumers:insert {
-            username = "test"
-        })
-
-
-        assert(helpers.start_kong(dev_env))
+        helpers.start_kong({ custom_plugins = 'escher' })
     end)
 
     teardown(function()
@@ -33,6 +30,13 @@ describe("Plugin: escher (access)", function()
     end)
 
     describe("Admin API", function()
+
+        local service, route, plugin, consumer
+
+        before_each(function()
+            service, route, plugin, consumer = setup_test_env()
+        end)
+
         it("registered the plugin globally", function()
             local res = assert(helpers.admin_client():send {
                 method = "GET",
@@ -57,27 +61,53 @@ describe("Plugin: escher (access)", function()
 
         it("should create a new escher key for the given consumer", function()
           local res = assert(helpers.admin_client():send {
-            method = "POST",
-            path = "/consumers/test/escher_key/",
-            body = {
-              key = 'test_key',
-              secret = 'test_secret'
-            },
-            headers = {
-              ["Content-Type"] = "application/json"
-            }
+              method = "POST",
+              path = "/consumers/" .. consumer.id .. "/escher_key/",
+              body = {
+                key = 'test_key',
+                secret = 'test_secret'
+              },
+              headers = {
+                ["Content-Type"] = "application/json"
+              }
           })
 
           local body = assert.res_status(201, res)
           local json = cjson.decode(body)
           assert.is_equal('test_key', json.key)
-          assert.is_equal('test_secret', json.secret)
+        end)
+
+        it("should create a new escher key with encrypted secret using encryption key from file", function()
+            local ecrypto = TestHelper.get_easy_crypto()
+
+            local secret = 'test_secret'
+            local res = assert(helpers.admin_client():send {
+                method = "POST",
+                path = "/consumers/" .. consumer.id .. "/escher_key/",
+                body = {
+                  key = 'test_key_v2',
+                  secret = secret
+                },
+                headers = {
+                  ["Content-Type"] = "application/json"
+                }
+            })
+
+            local body = assert.res_status(201, res)
+            local json = cjson.decode(body)
+
+            assert.is_equal('test_key_v2', json.key)
+            assert.are_not.equals(secret, json.secret)
+
+            local encryption_key = TestHelper.load_encryption_key_from_file(plugin.config.encryption_key_path)
+
+            assert.is_equal(secret, ecrypto:decrypt(encryption_key, json.secret))
         end)
 
         it("should be able to retrieve an escher key", function()
             local create_call = assert(helpers.admin_client():send {
               method = "POST",
-              path = "/consumers/test/escher_key/",
+              path = "/consumers/" .. consumer.id .. "/escher_key/",
               body = {
                 key = 'another_test_key',
                 secret = 'test_secret'
@@ -91,7 +121,7 @@ describe("Plugin: escher (access)", function()
 
             local retrieve_call = assert(helpers.admin_client():send {
                 method = "GET",
-                path = "/consumers/test/escher_key/another_test_key"
+                path = "/consumers/" .. consumer.id .. "/escher_key/another_test_key"
               })
 
             local body = assert.res_status(200, retrieve_call)
@@ -103,7 +133,7 @@ describe("Plugin: escher (access)", function()
         it("should be able to delete an escher key", function()
             local create_call = assert(helpers.admin_client():send {
               method = "POST",
-              path = "/consumers/test/escher_key/",
+              path = "/consumers/" .. consumer.id .. "/escher_key/",
               body = {
                 key = 'yet_another_test_key',
                 secret = 'test_secret'
@@ -117,14 +147,61 @@ describe("Plugin: escher (access)", function()
 
             local delete_call = assert(helpers.admin_client():send {
                 method = "DELETE",
-                path = "/consumers/test/escher_key/yet_another_test_key"
+                path = "/consumers/" .. consumer.id .. "/escher_key/yet_another_test_key"
               })
 
             local body = assert.res_status(204, delete_call)
           end)
     end)
 
+    describe("Setup plugin with wrong config", function()
+
+        local service, route, plugin, consumer
+
+        before_each(function()
+            helpers.dao:truncate_tables()
+            service = get_response_body(TestHelper.setup_service())
+            route = get_response_body(TestHelper.setup_route_for_service(service.id))
+        end)
+
+        it("should respons 400 when encryption file does not exists", function()
+            local res = TestHelper.setup_plugin_for_service(service.id, 'escher', { encryption_key_path = "/kong.txt" })
+
+            assert.res_status(400, res)
+        end)
+    end)
+
+    describe("Setup plugin with wrong config", function()
+
+        before_each(function()
+            helpers.dao:truncate_tables()
+        end)
+
+        it("should respons 400 when encryption file does not exists", function()
+            local first_service = get_response_body(TestHelper.setup_service("first"))
+            local second_service = get_response_body(TestHelper.setup_service("second"))
+
+            get_response_body(TestHelper.setup_route_for_service(first_service.id))
+            get_response_body(TestHelper.setup_route_for_service(second_service.id))
+
+            local f = io.open("/tmp/other_secret.txt", "w")
+            f:close()
+
+            local first_res = TestHelper.setup_plugin_for_service(first_service.id, 'escher', { encryption_key_path = "/secret.txt" })
+            local second_res = TestHelper.setup_plugin_for_service(second_service.id, 'escher', { encryption_key_path = "/tmp/other_secret.txt" })
+
+            assert.res_status(400, second_res)
+        end)
+    end)
+
     describe("Authentication", function()
+
+        local service, route, plugin, consumer
+
+        before_each(function()
+            service, route, plugin, consumer = setup_test_env()
+        end)
+
         local current_date = os.date("!%Y%m%dT%H%M%SZ")
 
         local config = {
@@ -198,7 +275,7 @@ describe("Plugin: escher (access)", function()
         it("responds with status 200 when X-EMS-AUTH header is valid", function()
             assert(helpers.admin_client():send {
                 method = "POST",
-                path = "/consumers/test/escher_key/",
+                path = "/consumers/" .. consumer.id .. "/escher_key/",
                 body = {
                     key = 'test_key',
                     secret = 'test_secret'

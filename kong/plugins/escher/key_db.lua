@@ -1,11 +1,11 @@
-local singletons = require "kong.singletons"
-local Object = require("classic")
 local Logger = require "logger"
+local Object = require "classic"
+local singletons = require "kong.singletons"
 
 local KeyDb = Object:extend()
 
 local function load_credential(key)
-    local credential, err = singletons.dao.escher_keys:find_all { key = key }
+    local credential, err = singletons.dao.escher_keys:find_all({["key"] = key})
 
     if err then
         return nil, err
@@ -14,17 +14,21 @@ local function load_credential(key)
     return credential[1]
 end
 
-function KeyDb.find_secret_by_key(key)
-    local escher_key = KeyDb.find_by_key(key)
+function KeyDb:new(crypto)
+    self.crypto = crypto
+end
+
+function KeyDb:find_secret_by_key(key)
+    local escher_key = self:find_by_key(key)
 
     if not escher_key then
       return nil
     end
 
-    return escher_key.secret
+    return self.crypto:decrypt(escher_key.secret)
 end
 
-function KeyDb.find_by_key(key)
+function KeyDb:find_by_key(key)
     local escher_cache_key = singletons.dao.escher_keys:cache_key(key)
     local escher_key, err = singletons.cache:get(escher_cache_key, nil, load_credential, key)
 
