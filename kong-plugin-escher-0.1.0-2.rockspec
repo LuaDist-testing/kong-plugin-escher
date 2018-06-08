@@ -1,18 +1,10 @@
--- This file was automatically generated for the LuaDist project.
-
 package = "kong-plugin-escher"
 version = "0.1.0-2"
 supported_platforms = {"linux", "macosx"}
--- LuaDist source
 source = {
-  tag = "0.1.0-2",
-  url = "git://github.com/LuaDist-testing/kong-plugin-escher.git"
+  url = "git+https://github.com/emartech/kong-plugin-escher.git",
+  tag = "0.1.0"
 }
--- Original source
--- source = {
---   url = "git+https://github.com/emartech/kong-plugin-escher.git",
---   tag = "0.1.0"
--- }
 description = {
   summary = "Escher auth plugin for Kong API gateway.",
   homepage = "https://github.com/emartech/kong-plugin-escher",
