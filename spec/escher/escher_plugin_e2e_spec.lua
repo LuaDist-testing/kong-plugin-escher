@@ -19,7 +19,7 @@ local function setup_test_env()
     return service, route, plugin, consumer
 end
 
-describe("Plugin: escher (access)", function()
+describe("Plugin: escher (access) #e2e", function()
 
     setup(function()
         helpers.start_kong({ custom_plugins = 'escher' })
@@ -155,7 +155,6 @@ describe("Plugin: escher (access)", function()
     end)
 
     describe("Setup plugin with wrong config", function()
-
         local service, route, plugin, consumer
 
         before_each(function()
@@ -169,26 +168,17 @@ describe("Plugin: escher (access)", function()
 
             assert.res_status(400, res)
         end)
-    end)
 
-    describe("Setup plugin with wrong config", function()
+        it("should respons 400 when encryption file path does not equal with the other escher plugin configurations", function()
+            local other_service = get_response_body(TestHelper.setup_service("second"))
 
-        before_each(function()
-            helpers.dao:truncate_tables()
-        end)
-
-        it("should respons 400 when encryption file does not exists", function()
-            local first_service = get_response_body(TestHelper.setup_service("first"))
-            local second_service = get_response_body(TestHelper.setup_service("second"))
-
-            get_response_body(TestHelper.setup_route_for_service(first_service.id))
-            get_response_body(TestHelper.setup_route_for_service(second_service.id))
+            get_response_body(TestHelper.setup_route_for_service(other_service.id))
 
             local f = io.open("/tmp/other_secret.txt", "w")
             f:close()
 
-            local first_res = TestHelper.setup_plugin_for_service(first_service.id, 'escher', { encryption_key_path = "/secret.txt" })
-            local second_res = TestHelper.setup_plugin_for_service(second_service.id, 'escher', { encryption_key_path = "/tmp/other_secret.txt" })
+            TestHelper.setup_plugin_for_service(service.id, 'escher', { encryption_key_path = "/secret.txt" })
+            local second_res = TestHelper.setup_plugin_for_service(other_service.id, 'escher', { encryption_key_path = "/tmp/other_secret.txt" })
 
             assert.res_status(400, second_res)
         end)
@@ -244,72 +234,159 @@ describe("Plugin: escher (access)", function()
         local ems_auth_header = escher:generateHeader(request, {})
         local ems_auth_header_wrong_api_key = escher_wrong_api_key:generateHeader(request, {})
 
+        context("when anonymous user does not allowed", function()
+            it("responds with status 401 if request not has X-EMS-AUTH header", function()
+                local res = assert(helpers.proxy_client():send {
+                    method = "GET",
+                    path = "/request",
+                    headers = {
+                        ["Host"] = "test1.com"
+                    }
+                })
 
-        it("responds with status 401 if request not has X-EMS-AUTH header and anonymous not allowed", function()
-            local res = assert(helpers.proxy_client():send {
-                method = "GET",
-                path = "/request",
-                headers = {
-                    ["Host"] = "test1.com"
-                }
-            })
+                local body = assert.res_status(401, res)
+                assert.is_equal('{"message":"X-EMS-AUTH header not found!"}', body)
+            end)
 
-            local body = assert.res_status(401, res)
-            assert.is_equal('{"message":"X-EMS-AUTH header not found!"}', body)
+            it("responds with status 401 when X-EMS-AUTH header is invalid", function()
+                local res = assert(helpers.proxy_client():send {
+                    method = "GET",
+                    path = "/request",
+                    headers = {
+                        ["X-EMS-DATE"] = current_date,
+                        ["Host"] = "test1.com",
+                        ["X-EMS-AUTH"] = 'invalid header'
+                    }
+                })
+
+                assert.res_status(401, res)
+            end)
+
+            it("responds with status 200 when X-EMS-AUTH header is valid", function()
+                assert(helpers.admin_client():send {
+                    method = "POST",
+                    path = "/consumers/" .. consumer.id .. "/escher_key/",
+                    body = {
+                        key = 'test_key',
+                        secret = 'test_secret'
+                    },
+                    headers = {
+                        ["Content-Type"] = "application/json"
+                    }
+                })
+
+                local res = assert(helpers.proxy_client():send {
+                    method = "GET",
+                    path = "/request",
+                    headers = {
+                        ["X-EMS-DATE"] = current_date,
+                        ["Host"] = "test1.com",
+                        ["X-EMS-AUTH"] = ems_auth_header
+                    }
+                })
+
+                assert.res_status(200, res)
+            end)
+
+            it("responds with status 401 when api key was not found", function()
+                local res = assert(helpers.proxy_client():send {
+                    method = "GET",
+                    path = "/request",
+                    headers = {
+                        ["X-EMS-DATE"] = current_date,
+                        ["Host"] = "test1.com",
+                        ["X-EMS-AUTH"] = ems_auth_header_wrong_api_key
+                    }
+                })
+
+                assert.res_status(401, res)
+            end)
         end)
 
-        it("responds with status 401 when X-EMS-AUTH header is invalid", function()
-            local res = assert(helpers.proxy_client():send {
-                method = "GET",
-                path = "/request",
-                headers = {
-                    ["X-EMS-DATE"] = current_date,
-                    ["Host"] = "test1.com",
-                    ["X-EMS-AUTH"] = 'invalid header'
-                }
-            })
+        context("when anonymous user allowed", function()
+            local service, route, anonymous, plugin, consumer
 
-            assert.res_status(401, res)
-        end)
+            before_each(function()
+                helpers.dao:truncate_tables()
 
-        it("responds with status 200 when X-EMS-AUTH header is valid", function()
-            assert(helpers.admin_client():send {
-                method = "POST",
-                path = "/consumers/" .. consumer.id .. "/escher_key/",
-                body = {
-                    key = 'test_key',
-                    secret = 'test_secret'
-                },
-                headers = {
-                    ["Content-Type"] = "application/json"
-                }
-            })
+                service = get_response_body(TestHelper.setup_service())
+                route = get_response_body(TestHelper.setup_route_for_service(service.id))
 
-            local res = assert(helpers.proxy_client():send {
-                method = "GET",
-                path = "/request",
-                headers = {
-                    ["X-EMS-DATE"] = current_date,
-                    ["Host"] = "test1.com",
-                    ["X-EMS-AUTH"] = ems_auth_header
-                }
-            })
+                anonymous = get_response_body(TestHelper.setup_consumer('anonymous'))
+                plugin = get_response_body(TestHelper.setup_plugin_for_service(service.id, 'escher', {anonymous = anonymous.id, encryption_key_path = "/secret.txt"}))
 
-            assert.res_status(200, res)
-        end)
+                consumer = get_response_body(TestHelper.setup_consumer('TestUser'))
+            end)
 
-        it("responds with status 401 when api key was not found", function()
-            local res = assert(helpers.proxy_client():send {
-                method = "GET",
-                path = "/request",
-                headers = {
-                    ["X-EMS-DATE"] = current_date,
-                    ["Host"] = "test1.com",
-                    ["X-EMS-AUTH"] = ems_auth_header_wrong_api_key
-                }
-            })
+            it("responds with status 200 if request not has X-EMS-AUTH header", function()
+                local res = assert(helpers.proxy_client():send {
+                    method = "GET",
+                    path = "/request",
+                    headers = {
+                        ["Host"] = "test1.com"
+                    }
+                })
 
-            assert.res_status(401, res)
+                assert.res_status(200, res)
+            end)
+
+            it("should proxy the request with anonymous when X-EMS-AUTH header is invalid", function()
+                local res = assert(helpers.proxy_client():send {
+                    method = "GET",
+                    path = "/request",
+                    headers = {
+                        ["X-EMS-DATE"] = current_date,
+                        ["Host"] = "test1.com",
+                        ["X-EMS-AUTH"] = 'invalid header'
+                    }
+                })
+
+                local response = assert.res_status(200, res)
+                local body = cjson.decode(response)
+                assert.is_equal("anonymous", body.headers["x-consumer-username"])
+            end)
+
+            it("should proxy the request with proper user when X-EMS-AUTH header is valid", function()
+                assert(helpers.admin_client():send {
+                    method = "POST",
+                    path = "/consumers/" .. consumer.id .. "/escher_key/",
+                    body = {
+                        key = 'test_key',
+                        secret = 'test_secret'
+                    },
+                    headers = {
+                        ["Content-Type"] = "application/json"
+                    }
+                })
+
+                local res = assert(helpers.proxy_client():send {
+                    method = "GET",
+                    path = "/request",
+                    headers = {
+                        ["X-EMS-DATE"] = current_date,
+                        ["Host"] = "test1.com",
+                        ["X-EMS-AUTH"] = ems_auth_header
+                    }
+                })
+
+                local response = assert.res_status(200, res)
+                local body = cjson.decode(response)
+                assert.is_equal("TestUser", body.headers["x-consumer-username"])
+            end)
+
+            it("responds with status 200 when api key was not found", function()
+                local res = assert(helpers.proxy_client():send {
+                    method = "GET",
+                    path = "/request",
+                    headers = {
+                        ["X-EMS-DATE"] = current_date,
+                        ["Host"] = "test1.com",
+                        ["X-EMS-AUTH"] = ems_auth_header_wrong_api_key
+                    }
+                })
+
+                assert.res_status(200, res)
+            end)
         end)
 
     end)
